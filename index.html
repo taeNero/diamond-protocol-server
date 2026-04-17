@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Diamond Protocol Council</title>
+    <style>
+        body { font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; background: #0a0a0a; color: #fff; }
+        textarea { width: 100%; height: 150px; background: #1a1a1a; color: #fff; border: 1px solid #333; padding: 15px; }
+        button { background: #7c3aed; color: #fff; padding: 15px 30px; border: none; cursor: pointer; margin-top: 20px; }
+        button:hover { background: #6d28d9; }
+        #response { background: #1a1a1a; padding: 20px; margin-top: 20px; border: 1px solid #333; white-space: pre-wrap; }
+        .loading { opacity: 0.5; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <h1>💎 Consult The Council</h1>
+    <textarea id="prompt" placeholder="Ask the council anything about your business..."></textarea>
+    <br>
+    <button onclick="consult()" id="submit">Consult Council</button>
+    <div id="response"></div>
+
+    <script>
+        async function consult() {
+            const prompt = document.getElementById('prompt').value;
+            const btn = document.getElementById('submit');
+            const response = document.getElementById('response');
+            
+            btn.classList.add('loading');
+            btn.textContent = 'Council Consulting...';
+            
+            try {
+                const res = await fetch('http://localhost:8000/api/council', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, include_context: true })
+                });
+                const data = await res.json();
+                response.textContent = data.blueprint;
+            } catch (err) {
+                response.textContent = 'Error: ' + err.message;
+            }
+            
+            btn.classList.remove('loading');
+            btn.textContent = 'Consult Council';
+        }
+    </script>
+</body>
+</html>
