@@ -212,6 +212,56 @@ def handle_cathedral():
         print(f"\n❌ CATHEDRAL WEBHOOK ERROR: {str(e)}\n", flush=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/engagement', methods=['GET'])
+def get_engagement_data():
+    try:
+        # Get recent engagement data from Supabase
+        result = supabase.table("cathedral_engagement").select("*").order("created_at", desc=True).limit(100).execute()
+        
+        # Aggregate by rank level (for cohorts)
+        rank_stats = {}
+        for row in result.data:
+            rank = row.get('rank_level', 'unknown')
+            if rank not in rank_stats:
+                rank_stats[rank] = {'count': 0, 'total_value': 0}
+            rank_stats[rank]['count'] += 1
+            rank_stats[rank]['total_value'] += float(row.get('value') or 0)
+        
+        # Format as cohorts (matches UI expectations)
+        cohorts = []
+        for rank_name, stats in rank_stats.items():
+            cohorts.append({
+                "name": rank_name.title(),  # "seeker" → "Seeker"
+                "completion": min(100, int(stats['total_value'] / 10)),  # Calculate % based on value
+                "users": stats['count']
+            })
+        
+        # Sort by completion (highest first)
+        cohorts.sort(key=lambda x: x['completion'], reverse=True)
+        
+        # Generate recent coupons/rewards (from agent_logs or separate table)
+        coupons_result = supabase.table("agent_logs").select("message, created_at").eq("action_type", "RANK_UP").order("created_at", desc=True).limit(5).execute()
+        
+        coupons = []
+        for row in coupons_result.data:
+            coupons.append({
+                "code": f"RANK-{row['created_at'][:10].replace('-', '')}",  # Generate pseudo-code
+                "reward": row['message'][:50],  # Truncate message
+                "triggered": row['created_at']
+            })
+        
+        return jsonify({
+            "cohorts": cohorts,
+            "coupons": coupons
+        }), 200
+        
+    except Exception as e:
+        print(f"\n❌ ENGAGEMENT API ERROR: {str(e)}\n", flush=True)
+        return jsonify({
+            "cohorts": [],
+            "coupons": []
+        }), 200  # Return 200 with empty data (graceful degradation)
+
 
 if __name__ == '__main__':
     print("🎧 Angel Orchestrator is online and listening on port 5000...")
