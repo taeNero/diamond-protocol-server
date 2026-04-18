@@ -182,6 +182,36 @@ def handle_intake():
         print("\n❌ SERVER CRASHED DURING WEBHOOK:")
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route('/cathedral-webhook', methods=['POST'])
+def handle_cathedral():
+    try:
+        data = request.json
+        print(f"\n🏛️ [CATHEDRAL EVENT]: {data}\n", flush=True)
+        
+        # Store engagement data in Supabase
+        supabase.table("cathedral_engagement").insert({
+            "user_id": data.get("user_id"),
+            "username": data.get("username"),
+            "rank_level": data.get("rank_level"),
+            "value": data.get("value"),
+            "event_type": data.get("event", "rank_up"),
+            "test_mode": data.get("test", False)
+        }).execute()
+        
+        # Log to agent_logs for dashboard feed
+        supabase.table("agent_logs").insert({
+            "agent_name": "Cathedral",
+            "action_type": "RANK_UP",
+            "message": f"{data.get('username')} ranked up to {data.get('rank_level')} (Value: {data.get('value')})",
+            "status": "OK"
+        }).execute()
+        
+        return jsonify({"status": "success", "message": "Cathedral engagement tracked"}), 200
+    except Exception as e:
+        print(f"\n❌ CATHEDRAL WEBHOOK ERROR: {str(e)}\n", flush=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     print("🎧 Angel Orchestrator is online and listening on port 5000...")
