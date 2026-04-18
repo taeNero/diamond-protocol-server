@@ -91,12 +91,17 @@ class VaultSearchTool(BaseTool):
 
     def _run(self, query: str) -> str:
         try:
-            # 1. Turn the agent's text query into a vector using your local Ollama
-            url = "http://localhost:11434/api/embeddings"
-            response = requests.post(url, json={"model": "nomic-embed-text", "prompt": query}).json()
-            query_embedding = response["embedding"]
+            # 1. Get embeddings from OpenAI (cloud-based, works on Railway)
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            
+            embedding_response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=query
+            )
+            query_embedding = embedding_response.data[0].embedding
 
-            # 2. Search Supabase using the pgvector function we built
+            # 2. Search Supabase using the pgvector function
             if supabase:
                 result = supabase.rpc(
                     'match_dpc_knowledge', 
@@ -116,11 +121,12 @@ class VaultSearchTool(BaseTool):
         except Exception as e:
             return f"Error searching the vault: {str(e)}"
 
-vault_search_tool = VaultSearchTool()
+#vault_search_tool = VaultSearchTool()
+
 
 # 3. Define the LLM
 claude_llm = LLM(
-    model="anthropic/claude-sonnet-4-20241022",  # or "anthropic/claude-3-5-sonnet-20241022"
+    model="claude-3-5-sonnet-20241022",  # or "anthropic/claude-3-5-sonnet-20241022"
     temperature=0.7,
     max_tokens=4096
 )
@@ -131,7 +137,7 @@ angel_orchestrator = Agent(
     goal='Analyze incoming webhooks and determine which agent should handle them.',
     backstory='You are Angel, the master router for the DPC ecosystem. You analyze payloads and give clear directives.',
     verbose=True,
-    tools=[vault_search_tool], 
+   # tools=[vault_search_tool], 
     llm=claude_llm
 )
 
@@ -140,7 +146,7 @@ diamond_agent = Agent(
     goal='Execute internal operations and log updates to the dashboard.',
     backstory='You are the Diamond Protocol agent. You follow Angel\'s orders and use the broadcast tool to report success.',
     verbose=True,
-    tools=[db_logger_tool, pipeline_tool, vault_search_tool],
+    tools=[db_logger_tool, pipeline_tool],
     llm=claude_llm
 )
 
@@ -179,4 +185,4 @@ def handle_intake():
 
 if __name__ == '__main__':
     print("🎧 Angel Orchestrator is online and listening on port 5000...")
-    app.run(port=5000, debug=True)
+app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=False)
