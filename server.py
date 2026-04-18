@@ -262,6 +262,32 @@ def get_engagement_data():
             "coupons": []
         }), 200  # Return 200 with empty data (graceful degradation)
 
+@app.route('/shopify-webhook', methods=['POST'])
+def handle_shopify():
+    try:
+        data = request.json
+        print(f"\n🛒 [SHOPIFY ORDER]: {data}\n", flush=True)
+        
+        # Store order in Supabase
+        supabase.table("shopify_orders").insert({
+            "order_id": data.get("id"),
+            "customer_name": data.get("customer", {}).get("name"),
+            "total_price": data.get("total_price"),
+            "created_at": data.get("created_at")
+        }).execute()
+        
+        # Log to agent_logs for dashboard feed
+        supabase.table("agent_logs").insert({
+            "agent_name": "Shopify",
+            "action_type": "ORDER_RECEIVED",
+            "message": f"Order from {data.get('customer', {}).get('name')}: ${data.get('total_price')}",
+            "status": "OK"
+        }).execute()
+        
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     print("🎧 Angel Orchestrator is online and listening on port 5000...")
