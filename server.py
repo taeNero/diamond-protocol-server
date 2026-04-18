@@ -183,7 +183,7 @@ def handle_intake():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
     
-    @app.route('/cathedral-webhook', methods=['POST'])
+@app.route('/cathedral-webhook', methods=['POST'])
 def handle_cathedral():
     try:
         data = request.json
