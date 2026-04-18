@@ -6,3 +6,5 @@ langchain-anthropic>=1.4.0
 python-dotenv>=1.0.0
 pydantic>=2.11.0
 gunicorn==21.2.0
+supabase
+flask
