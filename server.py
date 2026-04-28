@@ -286,8 +286,7 @@ def handle_intake():
         return jsonify({"status": "success", "message": "DPC Swarm executed successfully"}), 200
 
     except Exception as e:
-        print("
-❌ SERVER CRASHED DURING WEBHOOK:")
+        print("❌ SERVER CRASHED DURING WEBHOOK:")
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -296,9 +295,7 @@ def handle_intake():
 def handle_cathedral():
     try:
         data = request.json
-        print(f"
-🏛️ [CATHEDRAL EVENT]: {data}
-", flush=True)
+        print(f"🏛️ [CATHEDRAL EVENT]: {data}", flush=True)
 
         supabase.table("cathedral_engagement").insert({
             "user_id": data.get("user_id"),
@@ -318,9 +315,7 @@ def handle_cathedral():
 
         return jsonify({"status": "success", "message": "Cathedral engagement tracked"}), 200
     except Exception as e:
-        print(f"
-❌ CATHEDRAL WEBHOOK ERROR: {str(e)}
-", flush=True)
+        print(f"❌ CATHEDRAL WEBHOOK ERROR: {str(e)}", flush=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -360,9 +355,7 @@ def get_engagement_data():
         return jsonify({"cohorts": cohorts, "coupons": coupons}), 200
 
     except Exception as e:
-        print(f"
-❌ ENGAGEMENT API ERROR: {str(e)}
-", flush=True)
+        print(f"❌ ENGAGEMENT API ERROR: {str(e)}", flush=True)
         return jsonify({"cohorts": [], "coupons": []}), 200
 
 
@@ -370,9 +363,7 @@ def get_engagement_data():
 def handle_shopify():
     try:
         data = request.json
-        print(f"
-🛒 [SHOPIFY ORDER]: {data}
-", flush=True)
+        print(f"🛒 [SHOPIFY ORDER]: {data}", flush=True)
 
         supabase.table("shopify_orders").insert({
             "order_id": data.get("id"),
@@ -405,9 +396,7 @@ def run_guardian_sync():
     Call this on a schedule (e.g. daily cron) or manually from the dashboard.
     """
     try:
-        print("
-⚡ [GUARDIAN SYNC INITIATED]
-", flush=True)
+        print("⚡ [GUARDIAN SYNC INITIATED]", flush=True)
 
         kael_task = Task(
             description=(
@@ -474,8 +463,7 @@ def run_guardian_sync():
         return jsonify({"status": "success", "message": "Guardian sync complete. Metrics written to Supabase."}), 200
 
     except Exception as e:
-        print("
-❌ GUARDIAN SYNC FAILED:")
+        print("❌ GUARDIAN SYNC FAILED:")
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
