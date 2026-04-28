@@ -58,7 +58,7 @@ class SupabaseLoggerTool(BaseTool):
 db_logger_tool = SupabaseLoggerTool()
 
 
-# --- Client Pipeline Tool (unchanged) ---
+# --- Client Pipeline Tool (corrected) ---
 class ClientIntakeInput(BaseModel):
     client_name: str = Field(..., description="Name of the client.")
     package_tier: str = Field(default="LEAD", description="Package bought. Default to 'LEAD' if none.")
@@ -82,10 +82,6 @@ class ClientIntakeTool(BaseTool):
                     "revenue_value": safe_revenue
                 }).execute()
             return f"Successfully added {client_name} to the CRM."
-        except Exception as e:
-            return f"Failed to add client to CRM: {str(e)}"%
-        except Exception as e:
-            return f"Failed to add client to CRM: {str(e)}"%
         except Exception as e:
             return f"Failed to add client to CRM: {str(e)}"
 
