@@ -262,9 +262,7 @@ aurixen_agent = Agent(
 def handle_intake():
     try:
         payload = request.json
-        print(f"
-📡 [WEBHOOK RECEIVED]: {payload}
-")
+        print(f"📡 [WEBHOOK RECEIVED]: {payload}")
 
         analyze_task = Task(
             description=f"Analyze this incoming webhook payload: {payload}. Identify the client name. If 'package' or 'amount' are null or missing, this is a free Lead. Set the package to 'LEAD' and amount to 0. Pass a summary to the next agent.",
