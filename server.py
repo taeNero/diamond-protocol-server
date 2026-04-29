@@ -383,6 +383,55 @@ def handle_shopify():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/dpc-client-webhook', methods=['POST'])
+def handle_new_client():
+    try:
+        payload = request.json
+        print(f"🎯 [LEAD WEBHOOK RECEIVED]: {payload}", flush=True)
+
+        # 1. Ignore anything that isn't a new insert to the dpc_clients table
+        if payload.get("table") != "dpc_clients" or payload.get("type") != "INSERT":
+            return jsonify({"status": "ignored", "reason": "Not a new dpc_client insert"}), 200
+
+        # 2. Extract the fresh lead data
+        lead_data = payload.get("record", {})
+        client_id = lead_data.get("id")
+        
+        # Safely extract intent and budget, handling missing data
+        intent = str(lead_data.get("intent", "")).lower()
+        budget = float(lead_data.get("budget") or 0.0)
+        client_name = lead_data.get("client_name", "Unknown Client")
+        
+        # 3. High-Ticket Override Logic
+        # (Checking if budget is 3k+ or if they mentioned 'founder' for Sovereign Hub)
+        is_high_ticket = budget >= 3000 or "founder" in intent
+        
+        if is_high_ticket:
+            new_stage = "Needs Manual Outreach"
+            print(f"🚨 HIGH TICKET LEAD: {client_name}", flush=True)
+            
+            # Broadcast alert to your dashboard
+            supabase.table("agent_logs").insert({
+                "agent_name": "Angel",
+                "action_type": "HIGH_TICKET_ALERT",
+                "message": f"🚨 High-Ticket Lead Alert: {client_name} (${budget} / Intent: {intent[:30]}...)",
+                "status": "INFO"
+            }).execute()
+        else:
+            new_stage = "Contacted"
+            print(f"✅ STANDARD LEAD: {client_name}", flush=True)
+
+        # 4. Update the Supabase row to close the loop
+        supabase.table("dpc_clients").update(
+            {"status": new_stage} # Assuming 'status' is your stage column based on your intake tool
+        ).eq("id", client_id).execute()
+
+        return jsonify({"status": "success", "client_id": client_id, "stage": new_stage}), 200
+
+    except Exception as e:
+        print("❌ ERROR IN DPC CLIENT WEBHOOK:")
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================================
 # 6. ROUTES — NEW GUARDIAN ENDPOINTS
