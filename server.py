@@ -420,8 +420,7 @@ def handle_shopify():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/api/dpc-client-webhook', methods=['POST'])
-def process_lead(lead_data):
+def run_anansi_outreach(lead_data):
     """Runs in background thread — won't block the webhook response"""
     try:
         client_id = lead_data.get("id")
@@ -498,7 +497,7 @@ def handle_new_client():
         lead_data = payload.get("record", {})
 
         # Fire and forget — return 200 immediately
-        thread = threading.Thread(target=process_lead, args=(lead_data,))
+        thread = threading.Thread(target=run_anansi_outreach, args=(lead_data,))
         thread.daemon = True
         thread.start()
 
