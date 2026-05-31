@@ -1,4 +1,7 @@
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import traceback
 import requests
 from flask import Flask, request, jsonify
@@ -9,7 +12,7 @@ from dotenv import load_dotenv
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
-
+import threading
 # ============================================================
 # 1. SETUP & KEYS
 # ============================================================
@@ -155,7 +158,41 @@ class GuardianMetricsWriterTool(BaseTool):
 
 guardian_metrics_tool = GuardianMetricsWriterTool()
 
+class EmailOutreachInput(BaseModel):
+    recipient_email: str = Field(..., description="The email address of the lead.")
+    subject: str = Field(..., description="The subject line of the email.")
+    body: str = Field(..., description="The personalized, plain-text body of the email.")
 
+class EmailOutreachTool(BaseTool):
+    name: str = "Email Outreach Tool"
+    description: str = "CRITICAL: Use this tool to send personalized welcome emails to new clients from frontdesk@daplayerscollective.com."
+    args_schema: type[BaseModel] = EmailOutreachInput
+
+    def _run(self, recipient_email: str, subject: str, body: str) -> str:
+        try:
+            # Pulling your secure credentials from Railway Environment Variables
+            sender_email = os.getenv("DPC_EMAIL_USER") # frontdesk@daplayerscollective.com
+            sender_password = os.getenv("DPC_EMAIL_PASSWORD") 
+            smtp_server = os.getenv("SMTP_SERVER", "mail.privateemail.com") # Default to Namecheap, change if using Workspace
+            smtp_port = int(os.getenv("SMTP_PORT", 587))
+
+            msg = MIMEMultipart()
+            msg['From'] = f"Anansi | Da Players Collective <{sender_email}>"
+            msg['To'] = recipient_email
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain'))
+
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+            server.quit()
+
+            return f"Successfully sent welcome email to {recipient_email}."
+        except Exception as e:
+            return f"Failed to send email: {str(e)}"
+
+email_outreach_tool = EmailOutreachTool()
 # ============================================================
 # 3. LLM
 # ============================================================
@@ -223,17 +260,17 @@ siryandorin_agent = Agent(
 
 anansi_agent = Agent(
     role='Anansi — Guardian of Brand & Community',
-    goal='Analyze the narrative density and community health of DPC by examining lead sources, intake velocity, and engagement patterns across all properties.',
+    goal='Analyze community health AND act as the official Voice of DPC, welcoming new leads into the Sovereignty Hub with personalized outreach.',
     backstory=(
         "You are Anansi, the Guardian of Brand and Community within the Diamond Protocol. "
-        "Your domain is the story and resonance of DPC in the world. "
-        "You analyze lead intake velocity, the ratio of leads to paying clients, which packages attract the most interest, "
-        "and the overall narrative health of the pipeline. "
-        "A strong brand shows high intake velocity, diverse lead sources, and growing community engagement. "
-        "You calculate a Narrative Density score and write your findings to the guardian_metrics table."
+        "Your domain is the story, resonance, and relationships of DPC. "
+        "Not only do you calculate Narrative Density and community health metrics, but you are also "
+        "entrusted with the frontdesk@daplayerscollective.com communications. "
+        "When a new standard lead enters the ecosystem via the Sovereignty Hub, you analyze their intent "
+        "and craft a highly personalized, culturally resonant welcome email to bring them into the fold."
     ),
     verbose=True,
-    tools=[supabase_reader_tool, guardian_metrics_tool, db_logger_tool],
+    tools=[supabase_reader_tool, guardian_metrics_tool, db_logger_tool, email_outreach_tool], # <-- Added Email Tool
     llm=claude_llm
 )
 
@@ -384,54 +421,94 @@ def handle_shopify():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/dpc-client-webhook', methods=['POST'])
+def process_lead(lead_data):
+    """Runs in background thread — won't block the webhook response"""
+    try:
+        client_id = lead_data.get("id")
+        intent = str(lead_data.get("intent", "")).lower()
+        budget = float(lead_data.get("budget") or 0.0)
+        client_name = lead_data.get("client_name", "Unknown Client")
+        message = lead_data.get("message", "No specific message provided.")
+        recipient_email = lead_data.get("email")
+
+        is_high_ticket = budget >= 3000 or "founder" in intent
+
+        if is_high_ticket:
+            new_stage = "Needs Manual Outreach"
+            print(f"🚨 HIGH TICKET LEAD: {client_name}", flush=True)
+            supabase.table("agent_logs").insert({
+                "agent_name": "Angel",
+                "action_type": "HIGH_TICKET_ALERT",
+                "message": f"🚨 High-Ticket Lead: {client_name} (${budget})",
+                "status": "INFO"
+            }).execute()
+
+        else:
+            new_stage = "Contacted"
+            print(f"✅ PROCESSING STANDARD LEAD: {client_name}", flush=True)
+
+            if recipient_email:
+                anansi_outreach_task = Task(
+                    description=f"""
+                    A new creative just joined via the Sovereignty Hub.
+                    Name: {client_name}
+                    Intent/Interest: {intent}
+                    Their Message: "{message}"
+
+                    Your job:
+                    1. Analyze their message to understand their intent and pain point.
+                    2. Draft a personalized, culturally resonant reply that speaks directly 
+                       to what they said. Your tone is authoritative but welcoming — you are 
+                       Anansi, Guardian of this community. Do NOT send a generic template. 
+                       Reference their actual message.
+                    3. Use the Email Outreach Tool to send your reply to {recipient_email}.
+                    4. Use the Dashboard Broadcast Tool to log what you did with 
+                       action_type 'LEAD_OUTREACH'.
+                    """,
+                    expected_output="Confirmation that the email was sent and logged.",
+                    agent=anansi_agent
+                )
+
+                Crew(
+                    agents=[anansi_agent],
+                    tasks=[anansi_outreach_task],
+                    process=Process.sequential
+                ).kickoff()
+
+        supabase.table("dpc_clients").update(
+            {"status": new_stage}
+        ).eq("id", client_id).execute()
+
+        print(f"✅ LEAD PROCESSED: {client_name} → {new_stage}", flush=True)
+
+    except Exception as e:
+        print(f"❌ BACKGROUND LEAD PROCESSING FAILED: {str(e)}", flush=True)
+        traceback.print_exc()
+
+
+@app.route('/api/dpc-client-webhook', methods=['POST'])
 def handle_new_client():
     try:
         payload = request.json
         print(f"🎯 [LEAD WEBHOOK RECEIVED]: {payload}", flush=True)
 
-        # 1. Ignore anything that isn't a new insert to the dpc_clients table
         if payload.get("table") != "dpc_clients" or payload.get("type") != "INSERT":
             return jsonify({"status": "ignored", "reason": "Not a new dpc_client insert"}), 200
 
-        # 2. Extract the fresh lead data
         lead_data = payload.get("record", {})
-        client_id = lead_data.get("id")
-        
-        # Safely extract intent and budget, handling missing data
-        intent = str(lead_data.get("intent", "")).lower()
-        budget = float(lead_data.get("budget") or 0.0)
-        client_name = lead_data.get("client_name", "Unknown Client")
-        
-        # 3. High-Ticket Override Logic
-        # (Checking if budget is 3k+ or if they mentioned 'founder' for Sovereign Hub)
-        is_high_ticket = budget >= 3000 or "founder" in intent
-        
-        if is_high_ticket:
-            new_stage = "Needs Manual Outreach"
-            print(f"🚨 HIGH TICKET LEAD: {client_name}", flush=True)
-            
-            # Broadcast alert to your dashboard
-            supabase.table("agent_logs").insert({
-                "agent_name": "Angel",
-                "action_type": "HIGH_TICKET_ALERT",
-                "message": f"🚨 High-Ticket Lead Alert: {client_name} (${budget} / Intent: {intent[:30]}...)",
-                "status": "INFO"
-            }).execute()
-        else:
-            new_stage = "Contacted"
-            print(f"✅ STANDARD LEAD: {client_name}", flush=True)
 
-        # 4. Update the Supabase row to close the loop
-        supabase.table("dpc_clients").update(
-            {"status": new_stage} # Assuming 'status' is your stage column based on your intake tool
-        ).eq("id", client_id).execute()
+        # Fire and forget — return 200 immediately
+        thread = threading.Thread(target=process_lead, args=(lead_data,))
+        thread.daemon = True
+        thread.start()
 
-        return jsonify({"status": "success", "client_id": client_id, "stage": new_stage}), 200
+        return jsonify({"status": "success", "message": "Lead received, Anansi dispatched"}), 200
 
     except Exception as e:
         print("❌ ERROR IN DPC CLIENT WEBHOOK:")
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # ============================================================
 # 6. ROUTES — NEW GUARDIAN ENDPOINTS
