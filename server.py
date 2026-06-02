@@ -182,15 +182,18 @@ class EmailOutreachTool(BaseTool):
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'plain'))
 
-            server = smtplib.SMTP(smtp_server, smtp_port)
+            print(f"📧 SMTP connecting to {smtp_server}:{smtp_port} as {sender_email}", flush=True)
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
             server.starttls()
             server.login(sender_email, sender_password)
             server.send_message(msg)
             server.quit()
+            print(f"📧 SMTP send OK → {recipient_email}", flush=True)
 
             return f"Successfully sent welcome email to {recipient_email}."
         except Exception as e:
-            return f"Failed to send email: {str(e)}"
+            print(f"❌ SMTP FAILURE: {type(e).__name__}: {str(e)}", flush=True)
+            return f"Failed to send email ({type(e).__name__}): {str(e)}"
 
 email_outreach_tool = EmailOutreachTool()
 # ============================================================
@@ -481,14 +484,6 @@ def run_anansi_outreach(lead_data):
                     tasks=[anansi_outreach_task],
                     process=Process.sequential
                 ).kickoff()
-
-                # Log completion
-                supabase.table("agent_logs").insert({
-                    "agent_name": "Anansi",
-                    "action_type": "LEAD_OUTREACH",
-                    "message": f"✅ Anansi outreach complete — {client_name} contacted at {recipient_email}",
-                    "status": "OK"
-                }).execute()
 
         supabase.table("dpc_clients").update(
             {"status": new_stage}
