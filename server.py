@@ -1,7 +1,4 @@
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import traceback
 import requests
 from flask import Flask, request, jsonify
@@ -170,29 +167,39 @@ class EmailOutreachTool(BaseTool):
 
     def _run(self, recipient_email: str, subject: str, body: str) -> str:
         try:
-            # Pulling your secure credentials from Railway Environment Variables
-            sender_email = os.getenv("DPC_EMAIL_USER") # frontdesk@daplayerscollective.com
-            sender_password = os.getenv("DPC_EMAIL_PASSWORD") 
-            smtp_server = os.getenv("SMTP_SERVER", "mail.privateemail.com") # Default to Namecheap, change if using Workspace
-            smtp_port = int(os.getenv("SMTP_PORT", 587))
+            api_key = os.getenv("RESEND_API_KEY")
+            sender_email = os.getenv("DPC_EMAIL_USER", "frontdesk@daplayerscollective.com")
 
-            msg = MIMEMultipart()
-            msg['From'] = f"Anansi | Da Players Collective <{sender_email}>"
-            msg['To'] = recipient_email
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain'))
+            if not api_key:
+                print("❌ RESEND_API_KEY not set in environment", flush=True)
+                return "Failed to send email: RESEND_API_KEY env var is missing."
 
-            print(f"📧 SMTP connecting to {smtp_server}:{smtp_port} as {sender_email}", flush=True)
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-            server.starttls()
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-            server.quit()
-            print(f"📧 SMTP send OK → {recipient_email}", flush=True)
+            print(f"📧 Resend send → {recipient_email} from {sender_email}", flush=True)
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": f"Anansi | Da Players Collective <{sender_email}>",
+                    "to": [recipient_email],
+                    "subject": subject,
+                    "text": body
+                },
+                timeout=15
+            )
 
-            return f"Successfully sent welcome email to {recipient_email}."
+            if response.status_code >= 200 and response.status_code < 300:
+                message_id = response.json().get("id", "unknown")
+                print(f"📧 Resend OK → {recipient_email} (id={message_id})", flush=True)
+                return f"Successfully sent welcome email to {recipient_email} (Resend id: {message_id})."
+            else:
+                print(f"❌ Resend FAILURE: HTTP {response.status_code} → {response.text}", flush=True)
+                return f"Failed to send email: Resend returned HTTP {response.status_code}: {response.text}"
+
         except Exception as e:
-            print(f"❌ SMTP FAILURE: {type(e).__name__}: {str(e)}", flush=True)
+            print(f"❌ Resend EXCEPTION: {type(e).__name__}: {str(e)}", flush=True)
             return f"Failed to send email ({type(e).__name__}): {str(e)}"
 
 email_outreach_tool = EmailOutreachTool()
