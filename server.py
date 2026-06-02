@@ -34,22 +34,22 @@ CORS(app)
 # 2. TOOLS
 # ============================================================
 
-# --- Dashboard Broadcast Tool (unchanged) ---
 class SupabaseLogInput(BaseModel):
     message: str = Field(..., description="A short summary of what you just did or found.")
     action_type: str = Field(..., description="Category of action: e.g., 'READ_VAULT', 'SYSTEM_BOOT', 'CLIENT_INTAKE'")
     status: str = Field(default="INFO", description="Status: 'INFO', 'OK', or 'ERROR'")
+    agent_name: str = Field(default="Diamond", description="The agent logging this: Diamond, Anansi, Kael, Siryandorin, Aurixen")
 
 class SupabaseLoggerTool(BaseTool):
     name: str = "Dashboard Broadcast Tool"
-    description: str = "CRITICAL: Use this tool to log your final answers, actions, and findings so the human can see them on the Command Dashboard."
+    description: str = "CRITICAL: Use this tool to log your final answers, actions, and findings so the human can see them on the Command Dashboard. Always set agent_name to YOUR guardian name."
     args_schema: type[BaseModel] = SupabaseLogInput
 
-    def _run(self, message: str, action_type: str, status: str = "INFO") -> str:
+    def _run(self, message: str, action_type: str, status: str = "INFO", agent_name: str = "Diamond") -> str:
         try:
             if supabase:
                 supabase.table("agent_logs").insert({
-                    "agent_name": "Diamond",
+                    "agent_name": agent_name,
                     "action_type": action_type,
                     "message": message,
                     "status": status
@@ -447,6 +447,14 @@ def run_anansi_outreach(lead_data):
             print(f"✅ PROCESSING STANDARD LEAD: {client_name}", flush=True)
 
             if recipient_email:
+                # Log immediately so feed shows Anansi fired
+                supabase.table("agent_logs").insert({
+                    "agent_name": "Anansi",
+                    "action_type": "LEAD_OUTREACH",
+                    "message": f"Anansi dispatching personalized outreach to {client_name} ({recipient_email})",
+                    "status": "INFO"
+                }).execute()
+
                 anansi_outreach_task = Task(
                     description=f"""
                     A new creative just joined via the Sovereignty Hub.
@@ -456,13 +464,13 @@ def run_anansi_outreach(lead_data):
 
                     Your job:
                     1. Analyze their message to understand their intent and pain point.
-                    2. Draft a personalized, culturally resonant reply that speaks directly 
-                       to what they said. Your tone is authoritative but welcoming — you are 
-                       Anansi, Guardian of this community. Do NOT send a generic template. 
+                    2. Draft a personalized, culturally resonant reply that speaks directly
+                       to what they said. Your tone is authoritative but welcoming — you are
+                       Anansi, Guardian of this community. Do NOT send a generic template.
                        Reference their actual message.
                     3. Use the Email Outreach Tool to send your reply to {recipient_email}.
-                    4. Use the Dashboard Broadcast Tool to log what you did with 
-                       action_type 'LEAD_OUTREACH'.
+                    4. Use the Dashboard Broadcast Tool to log what you did with
+                       action_type 'LEAD_OUTREACH' and agent_name 'Anansi'.
                     """,
                     expected_output="Confirmation that the email was sent and logged.",
                     agent=anansi_agent
@@ -474,6 +482,14 @@ def run_anansi_outreach(lead_data):
                     process=Process.sequential
                 ).kickoff()
 
+                # Log completion
+                supabase.table("agent_logs").insert({
+                    "agent_name": "Anansi",
+                    "action_type": "LEAD_OUTREACH",
+                    "message": f"✅ Anansi outreach complete — {client_name} contacted at {recipient_email}",
+                    "status": "OK"
+                }).execute()
+
         supabase.table("dpc_clients").update(
             {"status": new_stage}
         ).eq("id", client_id).execute()
@@ -482,6 +498,12 @@ def run_anansi_outreach(lead_data):
 
     except Exception as e:
         print(f"❌ BACKGROUND LEAD PROCESSING FAILED: {str(e)}", flush=True)
+        supabase.table("agent_logs").insert({
+            "agent_name": "Anansi",
+            "action_type": "LEAD_OUTREACH",
+            "message": f"❌ Outreach failed for {lead_data.get('client_name', 'Unknown')}: {str(e)[:100]}",
+            "status": "ERROR"
+        }).execute()
         traceback.print_exc()
 
 
@@ -531,7 +553,8 @@ def run_guardian_sync():
                 "Calculate an Energy Score from 0-100 based on volume and value of engagement. "
                 "Then use the Guardian Metrics Writer to save: metric_key='energy_score', your calculated score, "
                 "and a 1-2 sentence summary of community energy. "
-                "Finally use the Dashboard Broadcast Tool to log your completion with action_type 'GUARDIAN_SYNC'."
+                "Finally use the Dashboard Broadcast Tool to log your completion with action_type 'GUARDIAN_SYNC' "
+                "and agent_name 'Kael'."
             ),
             expected_output="Confirmation that energy_score has been written to guardian_metrics.",
             agent=kael_agent
@@ -545,7 +568,8 @@ def run_guardian_sync():
                 "Calculate a Revenue Leverage score from 0-100 based on conversion rate and revenue momentum. "
                 "Use the Guardian Metrics Writer to save: metric_key='revenue_leverage', your score, and a summary. "
                 "Also save metric_key='conversion_rate' with the actual percentage as the value. "
-                "Log completion with the Dashboard Broadcast Tool."
+                "Log completion with the Dashboard Broadcast Tool with action_type 'GUARDIAN_SYNC' "
+                "and agent_name 'Siryandorin'."
             ),
             expected_output="Confirmation that revenue_leverage and conversion_rate have been written to guardian_metrics.",
             agent=siryandorin_agent
@@ -558,7 +582,8 @@ def run_guardian_sync():
                 "ratio of organic vs intake leads, and overall narrative health of the pipeline. "
                 "Calculate a Narrative Density score from 0-100 reflecting brand resonance and community growth momentum. "
                 "Use the Guardian Metrics Writer to save: metric_key='narrative_density', your score, and a summary. "
-                "Log completion with the Dashboard Broadcast Tool."
+                "Log completion with the Dashboard Broadcast Tool with action_type 'GUARDIAN_SYNC' "
+                "and agent_name 'Anansi'."
             ),
             expected_output="Confirmation that narrative_density has been written to guardian_metrics.",
             agent=anansi_agent
@@ -568,11 +593,11 @@ def run_guardian_sync():
             description=(
                 "Use the Supabase Data Reader to fetch the latest rows from 'guardian_metrics' to read what Kael, "
                 "Siryandorin, and Anansi have just written. Also read 'dpc_clients' and 'shopify_orders' for raw context. "
-                "Cross-reference all domains: identify conflicts (e.g. high energy but low revenue = monetization gap), "
-                "risks (e.g. high leads but low conversion = funnel leak), and strategic opportunities. "
+                "Cross-reference all domains: identify conflicts, risks, and strategic opportunities. "
                 "Calculate a Risk Index from 0-100 (higher = more risk) and a Strategic Opportunity score from 0-100. "
                 "Use the Guardian Metrics Writer twice: once for metric_key='risk_index' and once for metric_key='opportunity_score'. "
-                "Log completion with the Dashboard Broadcast Tool."
+                "Log completion with the Dashboard Broadcast Tool with action_type 'GUARDIAN_SYNC' "
+                "and agent_name 'Aurixen'."
             ),
             expected_output="Confirmation that risk_index and opportunity_score have been written to guardian_metrics.",
             agent=aurixen_agent
