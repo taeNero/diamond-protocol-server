@@ -8,7 +8,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 import threading
 # ============================================================
 # 1. SETUP & KEYS
@@ -492,6 +492,13 @@ def run_anansi_outreach(lead_data):
                     process=Process.sequential
                 ).kickoff()
 
+                # Enter nurture sequence — first follow-up in 2 days
+                follow_up = (datetime.now(timezone.utc) + timedelta(days=2)).date().isoformat()
+                supabase.table("dpc_clients").update({
+                    "nurture_stage": 1,
+                    "follow_up_date": follow_up
+                }).eq("id", lead_data.get("id")).execute()
+
         supabase.table("dpc_clients").update(
             {"status": new_stage}
         ).eq("id", client_id).execute()
@@ -506,6 +513,100 @@ def run_anansi_outreach(lead_data):
             "message": f"❌ Outreach failed for {lead_data.get('client_name', 'Unknown')}: {str(e)[:100]}",
             "status": "ERROR"
         }).execute()
+        traceback.print_exc()
+
+
+def run_anansi_nurture(lead_data):
+    """Sends the next nurture email based on lead's sequence stage"""
+    try:
+        client_name = lead_data.get("client_name", "Unknown")
+        recipient_email = lead_data.get("email")
+        message = lead_data.get("message", "")
+        sequence_stage = lead_data.get("nurture_stage", 1)
+
+        if not recipient_email:
+            return
+
+        stage_context = {
+            1: "Send a value-packed insight directly related to their original message. Teach something useful. No pitch.",
+            2: "Share a brief story of someone with a similar goal who found success through DPC's framework. Make it real and specific.",
+            3: "Introduce what working with DPC actually looks like. One clear offer. One clear next step.",
+            4: "This is the decision email. Create urgency around their original goal. Ask them directly if they're ready to move."
+        }
+
+        context = stage_context.get(sequence_stage, stage_context[1])
+
+        supabase.table("agent_logs").insert({
+            "agent_name": "Anansi",
+            "action_type": "NURTURE_SEQUENCE",
+            "message": f"Anansi sending stage {sequence_stage} nurture to {client_name}",
+            "status": "INFO"
+        }).execute()
+
+        nurture_task = Task(
+            description=f"""
+            You are continuing a nurture sequence with an existing lead.
+            Name: {client_name}
+            Original Message: "{message}"
+            Sequence Stage: {sequence_stage} of 4
+
+            Your instruction for this stage:
+            {context}
+
+            Rules:
+            - Reference their original message to show you remember them
+            - Do NOT repeat the welcome. They already got that.
+            - Match the stage instruction exactly
+            - Keep it under 200 words
+            - Sign as Anansi, Guardian of Brand & Community
+
+            Use the Email Outreach Tool to send to {recipient_email}.
+            Use the Dashboard Broadcast Tool to log with
+            action_type 'NURTURE_SEQUENCE' and agent_name 'Anansi'.
+            """,
+            expected_output="Confirmation email sent and logged.",
+            agent=anansi_agent
+        )
+
+        Crew(
+            agents=[anansi_agent],
+            tasks=[nurture_task],
+            process=Process.sequential
+        ).kickoff()
+
+        # Advance to next stage or mark complete
+        next_stage = sequence_stage + 1
+        next_date = None
+
+        stage_delays = {1: 2, 2: 3, 3: 4, 4: None}
+        delay = stage_delays.get(sequence_stage)
+
+        if delay:
+            next_date = (
+                datetime.now(timezone.utc) + timedelta(days=delay)
+            ).date().isoformat()
+
+            supabase.table("dpc_clients").update({
+                "nurture_stage": next_stage,
+                "follow_up_date": next_date
+            }).eq("id", lead_data.get("id")).execute()
+        else:
+            # Sequence complete
+            supabase.table("dpc_clients").update({
+                "nurture_stage": 5,
+                "follow_up_date": None,
+                "status": "Sequence Complete"
+            }).eq("id", lead_data.get("id")).execute()
+
+        supabase.table("agent_logs").insert({
+            "agent_name": "Anansi",
+            "action_type": "NURTURE_SEQUENCE",
+            "message": f"✅ Stage {sequence_stage} sent to {client_name}. Next: {next_date or 'Sequence complete'}",
+            "status": "OK"
+        }).execute()
+
+    except Exception as e:
+        print(f"❌ NURTURE FAILED: {str(e)}", flush=True)
         traceback.print_exc()
 
 
@@ -529,6 +630,43 @@ def handle_new_client():
 
     except Exception as e:
         print("❌ ERROR IN DPC CLIENT WEBHOOK:")
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/nurture-sequence', methods=['POST'])
+def run_nurture_sequence():
+    """
+    Called daily by Railway cron.
+    Checks dpc_clients for leads due for follow-up and fires Anansi.
+    """
+    try:
+        today = date.today().isoformat()
+
+        # Find leads due for follow-up today
+        due = supabase.table("dpc_clients")\
+            .select("*")\
+            .eq("follow_up_date", today)\
+            .eq("package_tier", "LEAD")\
+            .execute()
+
+        if not due.data:
+            return jsonify({"status": "success", "message": "No leads due today"}), 200
+
+        for lead in due.data:
+            thread = threading.Thread(
+                target=run_anansi_nurture,
+                args=(lead,)
+            )
+            thread.daemon = True
+            thread.start()
+
+        return jsonify({
+            "status": "success",
+            "leads_processing": len(due.data)
+        }), 200
+
+    except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
