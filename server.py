@@ -17,7 +17,25 @@ from pydantic import BaseModel, Field
 from supabase import create_client
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import BaseTool
+# --- Anthropic SDK no longer accepts `temperature`; CrewAI still sends it. Strip it.
+try:
+    from anthropic.resources.messages import Messages as _Msgs, AsyncMessages as _AsyncMsgs
 
+    _orig_create = _Msgs.create
+    _orig_acreate = _AsyncMsgs.create
+
+    def _create_no_temp(self, *args, **kwargs):
+        kwargs.pop("temperature", None)
+        return _orig_create(self, *args, **kwargs)
+
+    async def _acreate_no_temp(self, *args, **kwargs):
+        kwargs.pop("temperature", None)
+        return await _orig_acreate(self, *args, **kwargs)
+
+    _Msgs.create = _create_no_temp
+    _AsyncMsgs.create = _acreate_no_temp
+except Exception as e:
+    print(f"⚠️ temperature patch not applied: {e}", flush=True)
 # ============================================================
 # 1. SETUP & KEYS
 # ============================================================
@@ -124,6 +142,51 @@ def send_email(recipient, subject, body):
         return False, f"HTTP {response.status_code}: {response.text[:200]}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+# --- Business event routing (Oct 2026) ---------------------------------
+# Payments/bookings/invoices go to dpc_events. Only leads go to the intake crew.
+LEAD_EVENTS = {"lead_intake", "client_created", None}
+BUSINESS_EVENTS = {"payment_success", "appointment_booked", "invoice_created", "task_created"}
+TEST_MARKERS = ("test", "zz-")
+
+
+def _looks_like_test(payload):
+    name = (payload.get("client_name") or "").lower()
+    email = (payload.get("client_email") or payload.get("email") or "").lower()
+    return payload.get("is_test") is True or any(m in name or m in email for m in TEST_MARKERS)
+
+
+def route_business_event(payload):
+    """True = handled here (payment/booking). False = it's a lead, run the normal intake."""
+    event = payload.get("event")
+    if event in LEAD_EVENTS or event not in BUSINESS_EVENTS:
+        return False
+
+    is_test = _looks_like_test(payload)
+    supabase.table("dpc_events").insert({
+        "event_type": event,
+        "source": payload.get("source", "hub"),
+        "client_name": payload.get("client_name"),
+        "client_email": clean_email(payload.get("client_email") or payload.get("email")),
+        "package": payload.get("package"),
+        "amount": payload.get("amount"),
+        "occurred_at": payload.get("occurred_at") or datetime.now(timezone.utc).isoformat(),
+        "is_test": is_test,
+        "payload": payload,
+    }).execute()
+
+    amount = payload.get("amount")
+    msg = f"{event}: {payload.get('client_name') or 'unknown'}"
+    if amount is not None:
+        msg += f" (${amount})"
+    log_event(
+        "Siryandorin" if event == "payment_success" else "Diamond",
+        event.upper(),
+        msg + (" [TEST]" if is_test else ""),
+        "OK"
+    )
+    return True
 
 
 # ============================================================
@@ -300,9 +363,14 @@ guardian_metrics_tool = GuardianMetricsWriterTool()
 # ============================================================
 # 5. LLM
 # ============================================================
+# Model comes from Railway variable ANTHROPIC_MODEL (e.g. claude-sonnet-5-5).
+# Swap models there, no code edit. CrewAI needs the "anthropic/" prefix, added here.
+CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
+if not CLAUDE_MODEL.startswith("anthropic/"):
+    CLAUDE_MODEL = f"anthropic/{CLAUDE_MODEL}"
+
 claude_llm = LLM(
-    model="anthropic/claude-sonnet-4-6",
-    temperature=0.7,
+    model=CLAUDE_MODEL,
     max_tokens=4096
 )
 
@@ -728,6 +796,16 @@ def health():
 def handle_intake():
     payload = request.get_json(silent=True) or {}
     print(f"📡 [WEBHOOK RECEIVED]: {payload}", flush=True)
+
+    # Payments/bookings go to dpc_events and stop here. Leads fall through to the intake crew.
+    try:
+        if route_business_event(payload):
+            return jsonify({"status": "success", "routed": payload.get("event")}), 200
+    except Exception as e:
+        traceback.print_exc()
+        log_event("Diamond", "EVENT_ROUTING", f"❌ Event routing failed: {str(e)[:150]}", "ERROR")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
     run_in_background(run_intake_crew, payload)
     return jsonify({"status": "accepted", "message": "Intake received, DPC Swarm dispatched"}), 202
 
