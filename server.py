@@ -132,8 +132,8 @@ def run_in_background(target, *args):
     thread.start()
 
 
-def send_email(recipient, subject, body):
-    """Deterministic send via Resend. Returns (ok, info)."""
+def send_email(recipient, subject, body, from_name="Anansi | Da Players Collective"):
+    """Deterministic send via Resend. Returns (ok, info). from_name sets the display name."""
     api_key = os.getenv("RESEND_API_KEY")
     sender = os.getenv("DPC_EMAIL_USER", "frontdesk@daplayerscollective.com")
 
@@ -148,7 +148,7 @@ def send_email(recipient, subject, body):
                 "Content-Type": "application/json"
             },
             json={
-                "from": f"Anansi | Da Players Collective <{sender}>",
+                "from": f"{from_name} <{sender}>",
                 "to": [recipient],
                 "subject": subject,
                 "text": body
@@ -891,7 +891,7 @@ def email_brief(body):
     if not BRIEF_EMAIL:
         return False, "BRIEF_EMAIL not set"
     subject = f"The Angel — Daily Brief, {datetime.now(timezone.utc).strftime('%a %b %d')}"
-    return send_email(BRIEF_EMAIL, subject, body)
+    return send_email(BRIEF_EMAIL, subject, body, from_name="The Angel | Da Players Collective")
 
 
 # ============================================================
