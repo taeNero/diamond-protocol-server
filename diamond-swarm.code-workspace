@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../.openclaw/workspace/diamond-swarm"
+		},
+		{
+			"name": "diamond-protocol-server",
+			"path": "."
+		}
+	],
+	"settings": {}
+}

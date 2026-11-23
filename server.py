@@ -567,13 +567,30 @@ def run_intake_crew(payload):
         log_event("Angel", "CLIENT_INTAKE", f"❌ Intake crew failed: {str(e)[:150]}", "ERROR")
 
 
+# Spec Sheet stores an internal band; customers see a tier name on the results page and readout.
+# Anansi must use the tier name so all three touchpoints match.
+SPEC_TIERS = {"Emerging": "Initiate", "Functional": "Operator", "Advanced": "Architect", "Sovereign": "Sovereign"}
+TIER_RULE = (
+    "If they took the Founder's Spec Sheet, call their level by its tier name "
+    "(Initiate, Operator, Architect or Sovereign) exactly as written in their message. "
+    "Never use the words band, Emerging, Functional or Advanced."
+)
+
+
+def tierify(text):
+    """Swap 'Band: Functional' for 'Tier: Operator' etc. in a lead's message."""
+    for band, tier in SPEC_TIERS.items():
+        text = text.replace(f"Band: {band}", f"Tier: {tier}")
+    return text
+
+
 def run_anansi_outreach(lead_data):
     client_id = lead_data.get("id")
     client_name = lead_data.get("client_name") or "Unknown Client"
     try:
         intent = str(lead_data.get("intent") or "").lower()
         budget = parse_money(lead_data.get("budget"))
-        message = lead_data.get("message") or "No specific message provided."
+        message = tierify(lead_data.get("message") or "No specific message provided.")
         recipient = clean_email(lead_data.get("email"))
 
         # High ticket → human handles it
@@ -599,6 +616,7 @@ Their Message: "{message}"
 
 Write a personalized welcome email that speaks directly to what they said.
 Identify their intent and pain point and reference their actual message.
+{TIER_RULE}
 Sign as Anansi, Guardian of Brand & Community, Da Players Collective.
 """)
 
@@ -654,7 +672,7 @@ def run_anansi_nurture(lead_data):
     client_name = lead_data.get("client_name") or "Unknown"
     try:
         recipient = clean_email(lead_data.get("email"))
-        message = lead_data.get("message") or ""
+        message = tierify(lead_data.get("message") or "")
         stage = int(lead_data.get("nurture_stage") or 1)
 
         if stage > 4:
@@ -681,6 +699,7 @@ Rules:
 - Do NOT repeat the welcome. They already got that.
 - Match the stage instruction exactly
 - Keep it under 200 words
+- {TIER_RULE}
 - Sign as Anansi, Guardian of Brand & Community
 """)
 
