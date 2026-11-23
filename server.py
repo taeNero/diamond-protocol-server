@@ -58,6 +58,24 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     print("⚠️ SUPABASE_URL / SUPABASE_KEY not set — database routes will return 503.", flush=True)
 
+# --- HQ front desk (separate Supabase project: dpc-front-desk) ---------
+# Railway variables:
+#   FRONT_DESK_SUPABASE_URL = https://dmdksfqyoulpxeenqfqp.supabase.co
+#   FRONT_DESK_SUPABASE_KEY = dpc-front-desk service_role key (server only, never the frontend)
+#   BRIEF_EMAIL             = where The Angel emails the daily brief (optional)
+FRONT_DESK_URL = os.getenv("FRONT_DESK_SUPABASE_URL")
+FRONT_DESK_KEY = os.getenv("FRONT_DESK_SUPABASE_KEY")
+BRIEF_EMAIL = os.getenv("BRIEF_EMAIL")
+
+front_desk = None
+if FRONT_DESK_URL and FRONT_DESK_KEY:
+    try:
+        front_desk = create_client(FRONT_DESK_URL, FRONT_DESK_KEY)
+    except Exception as e:
+        print(f"❌ Front desk client failed to initialize: {e}", flush=True)
+else:
+    print("⚠️ FRONT_DESK_SUPABASE_URL / _KEY not set — daily brief will not post to HQ.", flush=True)
+
 app = Flask(__name__)
 CORS(app)
 
@@ -782,6 +800,101 @@ def run_guardian_crew():
 
 
 # ============================================================
+# 8b. THE ANGEL — DAILY BRIEF (v1: deterministic, no LLM)
+# ============================================================
+
+# Statuses that mean "Nero has to do something"
+ACTION_STATUSES = [
+    "Replied - Action Required",
+    "Needs Manual Outreach",
+    "Needs Email - Manual",
+    "Outreach Failed",
+]
+
+PARK_TRIGGER_PER_WEEK = 30  # un-park milestone from the Nov 15 park plan
+
+
+def _count_since(table, column, since_iso, extra=None):
+    q = supabase.table(table).select("id", count="exact").gte(column, since_iso)
+    if extra:
+        q = extra(q)
+    return q.execute().count or 0
+
+
+def build_daily_brief():
+    now = datetime.now(timezone.utc)
+    day_ago = (now - timedelta(days=1)).isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+
+    # Last 24h — real (non-test) business events
+    events = supabase.table("dpc_events") \
+        .select("event_type, client_name, amount, is_test") \
+        .gte("occurred_at", day_ago).execute().data or []
+    events = [e for e in events if not e.get("is_test")]
+    payments = [e for e in events if e.get("event_type") == "payment_success"]
+    bookings = [e for e in events if e.get("event_type") == "appointment_booked"]
+
+    new_leads = supabase.table("dpc_clients").select("client_name") \
+        .gte("created_at", day_ago).execute().data or []
+    orders = supabase.table("shopify_orders").select("total_price") \
+        .gte("created_at", day_ago).execute().data or []
+
+    money = sum(parse_money(p.get("amount")) for p in payments) + \
+        sum(parse_money(o.get("total_price")) for o in orders)
+
+    # Things waiting on Nero, regardless of date
+    waiting = supabase.table("dpc_clients").select("client_name, status") \
+        .in_("status", ACTION_STATUSES).execute().data or []
+
+    # Weekly pulse for the park trigger
+    week_total = (
+        _count_since("dpc_events", "occurred_at", week_ago, lambda q: q.eq("is_test", False))
+        + _count_since("dpc_clients", "created_at", week_ago)
+        + _count_since("shopify_orders", "created_at", week_ago)
+    )
+
+    lines = [f"☀️ The Angel — Daily Brief, {now.strftime('%a %b %d')}"]
+
+    if not (payments or orders or new_leads or bookings):
+        lines.append("Quiet 24 hours — no sales, leads, or bookings came through.")
+    else:
+        lines.append(f"Money: ${money:,.2f} ({len(payments)} Hub payment(s), {len(orders)} Shopify order(s))")
+        names = ", ".join((l.get("client_name") or "Unknown") for l in new_leads[:3])
+        lines.append(f"Pipeline: {len(new_leads)} new lead(s){' — ' + names if names else ''}; {len(bookings)} booking(s)")
+
+    if waiting:
+        items = "; ".join(f"{w.get('client_name') or 'Unknown'} ({w.get('status')})" for w in waiting[:5])
+        lines.append(f"Needs you: {items}")
+    else:
+        lines.append("Needs you: nothing waiting.")
+
+    lines.append(f"Pulse: {week_total} real events this week (wake-up trigger: {PARK_TRIGGER_PER_WEEK}).")
+    return "\n".join(lines)
+
+
+def post_brief_to_hq(body):
+    """Posts to The Angel's center-table mailbox in HQ (station 'angel')."""
+    if not front_desk:
+        return False, "front desk not configured"
+    try:
+        front_desk.table("desk_messages").insert({
+            "station": "angel",
+            "sender": "angel",
+            "body": body,
+        }).execute()
+        return True, "posted"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def email_brief(body):
+    if not BRIEF_EMAIL:
+        return False, "BRIEF_EMAIL not set"
+    subject = f"The Angel — Daily Brief, {datetime.now(timezone.utc).strftime('%a %b %d')}"
+    return send_email(BRIEF_EMAIL, subject, body)
+
+
+# ============================================================
 # 9. ROUTES
 # ============================================================
 
@@ -1092,6 +1205,42 @@ def get_council_briefing():
         return jsonify({"status": "success", "briefing": briefing}), 200
 
     except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daily-brief', methods=['POST'])
+@require_secret
+@require_db
+def daily_brief():
+    """
+    Called daily by Railway cron (12:00 UTC = 7am ET) with header X-DPC-Secret.
+    Builds the brief, posts it to The Angel's center table in HQ, and emails it.
+    Preview only (no post, no email): POST /api/daily-brief?send=0
+    """
+    try:
+        body = build_daily_brief()
+
+        if request.args.get("send") == "0":
+            return jsonify({"status": "preview", "brief": body}), 200
+
+        hq_ok, hq_info = post_brief_to_hq(body)
+        mail_ok, mail_info = email_brief(body)
+
+        status = "OK" if (hq_ok or mail_ok) else "ERROR"
+        log_event("Angel", "DAILY_BRIEF",
+                  f"{body}\n[HQ: {hq_info} | Email: {mail_info if mail_ok else 'not sent — ' + str(mail_info)}]",
+                  status)
+
+        return jsonify({
+            "status": "success" if status == "OK" else "error",
+            "hq": {"ok": hq_ok, "info": hq_info},
+            "email": {"ok": mail_ok, "info": mail_info},
+            "brief": body
+        }), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        log_event("Angel", "DAILY_BRIEF", f"❌ Daily brief failed: {str(e)[:150]}", "ERROR")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
